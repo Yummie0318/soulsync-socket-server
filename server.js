@@ -6,11 +6,16 @@ import cors from "cors";
 const app = express();
 app.use(cors());
 
+// ✅ Add a test route so Render knows your service is alive
+app.get("/", (req, res) => {
+  res.send("✅ SoulSync Socket Server is running!");
+});
+
 const server = createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*", // Later restrict to your frontend domain
+    origin: "*", // You can later restrict this to your frontend URL
     methods: ["GET", "POST"],
   },
 });
@@ -28,8 +33,8 @@ io.on("connection", (socket) => {
   });
 });
 
-// ✅ Use Render's assigned port
+// ✅ Use Render’s assigned port (important)
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Socket.IO server running on port ${PORT}`);
 });
