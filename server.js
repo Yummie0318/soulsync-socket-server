@@ -10,7 +10,7 @@ const server = createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*", // You can restrict this later to your Vercel domain
+    origin: "*", // Later restrict to your frontend domain
     methods: ["GET", "POST"],
   },
 });
@@ -28,7 +28,8 @@ io.on("connection", (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 4000;
+// ✅ Use Render's assigned port
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`✅ Socket.IO server running on port ${PORT}`);
 });
