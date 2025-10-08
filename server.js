@@ -1,4 +1,3 @@
-// server.js
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -38,10 +37,9 @@ io.on("connection", (socket) => {
   });
 
   // ------------------------------------------------------
-  // 📨 Message Events
+  // 📨 MESSAGE EVENTS
   // ------------------------------------------------------
 
-  // 🆕 New message
   socket.on("message:new", (msg) => {
     const { sender_id, receiver_id } = msg;
     const roomId =
@@ -49,12 +47,10 @@ io.on("connection", (socket) => {
         ? `${sender_id}-${receiver_id}`
         : `${receiver_id}-${sender_id}`;
 
-    console.log("📩 [message:new] Received from client:", msg);
+    console.log("📩 [message:new] Received:", msg);
     io.to(roomId).emit("message:new", msg);
-    console.log(`📤 [message:new] Broadcasted to room: ${roomId}`);
   });
 
-  // ✏️ Message updated
   socket.on("message:update", (msg) => {
     const { sender_id, receiver_id } = msg;
     const roomId =
@@ -64,10 +60,8 @@ io.on("connection", (socket) => {
 
     console.log("📝 [message:update] Received:", msg);
     io.to(roomId).emit("message:update", msg);
-    console.log(`📤 [message:update] Broadcasted to room: ${roomId}`);
   });
 
-  // ❌ Message deleted
   socket.on("message:delete", (data) => {
     const { sender_id, receiver_id } = data;
     const roomId =
@@ -77,10 +71,8 @@ io.on("connection", (socket) => {
 
     console.log("🗑️ [message:delete] Received:", data);
     io.to(roomId).emit("message:delete", data);
-    console.log(`📤 [message:delete] Broadcasted to room: ${roomId}`);
   });
 
-  // 😍 Emoji reaction
   socket.on("message:reaction", (data) => {
     const { sender_id, receiver_id } = data;
     const roomId =
@@ -90,10 +82,8 @@ io.on("connection", (socket) => {
 
     console.log("😊 [message:reaction] Received:", data);
     io.to(roomId).emit("message:reaction", data);
-    console.log(`📤 [message:reaction] Broadcasted to room: ${roomId}`);
   });
 
-  // ↩️ Reply message
   socket.on("message:reply", (msg) => {
     const { sender_id, receiver_id } = msg;
     const roomId =
@@ -103,7 +93,46 @@ io.on("connection", (socket) => {
 
     console.log("↩️ [message:reply] Received:", msg);
     io.to(roomId).emit("message:new", msg);
-    console.log(`📤 [message:reply] Broadcasted as new message to room: ${roomId}`);
+  });
+
+  // ------------------------------------------------------
+  // 📞 CALL EVENTS (NEW)
+  // ------------------------------------------------------
+
+  // 🔔 Start a call (ringing)
+  socket.on("call:start", (data) => {
+    const { sender_id, receiver_id } = data;
+    const roomId =
+      sender_id < receiver_id
+        ? `${sender_id}-${receiver_id}`
+        : `${receiver_id}-${sender_id}`;
+
+    console.log("📞 [call:start] →", data);
+    io.to(roomId).emit("call:ringing", data); // receiver gets ringing signal
+  });
+
+  // ✅ Accept call
+  socket.on("call:accept", (data) => {
+    console.log("✅ [call:accept] →", data);
+    io.to(data.roomId).emit("call:accepted", data);
+  });
+
+  // ❌ Reject call
+  socket.on("call:reject", (data) => {
+    console.log("❌ [call:reject] →", data);
+    io.to(data.roomId).emit("call:rejected", data);
+  });
+
+  // 🔚 End call
+  socket.on("call:end", (data) => {
+    console.log("🔚 [call:end] →", data);
+    io.to(data.roomId).emit("call:ended", data);
+  });
+
+  // 📡 WebRTC signal exchange (for offer/answer/ICE)
+  socket.on("webrtc:signal", (data) => {
+    console.log("📡 [webrtc:signal] →", data.type);
+    io.to(data.roomId).emit("webrtc:signal", data);
   });
 
   // 🔴 Disconnect
@@ -122,11 +151,9 @@ app.post("/emit", (req, res) => {
   console.log("📦 Data:", data);
 
   if (!event) {
-    console.warn("⚠️ Missing 'event' in /emit request");
     return res.status(400).send("Missing 'event' field");
   }
 
-  // If message includes sender_id and receiver_id, send to that room only
   if (data?.sender_id && data?.receiver_id) {
     const roomId =
       data.sender_id < data.receiver_id
@@ -135,7 +162,6 @@ app.post("/emit", (req, res) => {
     io.to(roomId).emit(event, data);
     console.log(`📤 [${event}] Broadcasted to room: ${roomId}`);
   } else {
-    // Otherwise, broadcast globally
     io.emit(event, data);
     console.log(`🌐 [${event}] Broadcasted globally`);
   }
