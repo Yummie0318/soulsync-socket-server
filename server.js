@@ -7,58 +7,52 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Health check
+// ✅ Health check route
 app.get("/", (req, res) => {
   res.send("✅ SoulSync Socket Server is running!");
 });
 
+// ------------------------------------------------------
+// 🌍 SERVER + SOCKET.IO CONFIG
+// ------------------------------------------------------
 const server = createServer(app);
+
+// Allow both local and production origins
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://192.168.1.122:3000", // adjust your local IP if needed
+  "https://www.soulsyncai.site",
+  "https://soulsync-ugbm.vercel.app",
+  "https://soulsync-ugbm-82qad5e31-arnolds-projects-e2695847.vercel.app",
+];
+
 const io = new Server(server, {
   cors: {
-    origin: "*", // TODO: restrict to your frontend domain
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
   },
 });
 
-// 🧠 Track users in rooms for debugging
-const activeRooms = new Map();
-
 // ------------------------------------------------------
-// ✅ SOCKET.IO HANDLING
+// ⚡ SOCKET EVENTS
 // ------------------------------------------------------
 io.on("connection", (socket) => {
-  console.log("🟢 Connected:", socket.id);
+  console.log("🟢 User connected:", socket.id);
 
-  // ------------------------------------------------------
-  // 🏠 ROOM JOIN / LEAVE
-  // ------------------------------------------------------
-  socket.on("join_room", ({ roomId, senderId }) => {
+  // 🏠 Join private room for sender & receiver
+  socket.on("joinRoom", ({ senderId, receiverId }) => {
+    const roomId =
+      senderId < receiverId
+        ? `${senderId}-${receiverId}`
+        : `${receiverId}-${senderId}`;
     socket.join(roomId);
-    console.log(`👥 User ${senderId} (${socket.id}) joined room ${roomId}`);
-
-    if (!activeRooms.has(roomId)) activeRooms.set(roomId, []);
-    activeRooms.get(roomId).push({ socketId: socket.id, userId: senderId });
-
-    console.log("📋 Active Rooms:", JSON.stringify([...activeRooms.entries()], null, 2));
-  });
-
-  socket.on("leave_room", ({ roomId, senderId }) => {
-    socket.leave(roomId);
-    console.log(`🚪 User ${senderId} left room ${roomId}`);
-
-    if (activeRooms.has(roomId)) {
-      const filtered = activeRooms
-        .get(roomId)
-        .filter((entry) => entry.socketId !== socket.id);
-      if (filtered.length > 0) activeRooms.set(roomId, filtered);
-      else activeRooms.delete(roomId);
-    }
+    console.log(`🏠 ${socket.id} joined room: ${roomId}`);
   });
 
   // ------------------------------------------------------
   // 💬 MESSAGE EVENTS
   // ------------------------------------------------------
-  const msgEvents = [
+  const messageEvents = [
     "message:new",
     "message:update",
     "message:delete",
@@ -66,22 +60,23 @@ io.on("connection", (socket) => {
     "message:reply",
   ];
 
-  msgEvents.forEach((event) => {
+  messageEvents.forEach((event) => {
     socket.on(event, (data) => {
       const { sender_id, receiver_id } = data;
       const roomId =
         sender_id < receiver_id
           ? `${sender_id}-${receiver_id}`
           : `${receiver_id}-${sender_id}`;
-
       console.log(`💬 [${event}]`, data);
-      socket.to(roomId).emit(event, data);
+      io.to(roomId).emit(event, data);
     });
   });
 
   // ------------------------------------------------------
-  // 📞 CALL EVENTS
+  // 📞 CALL SIGNALING EVENTS
   // ------------------------------------------------------
+
+  // 🔔 Start call (Ringing)
   socket.on("call:start", (data) => {
     const { sender_id, receiver_id } = data;
     const roomId =
@@ -90,62 +85,67 @@ io.on("connection", (socket) => {
         : `${receiver_id}-${sender_id}`;
 
     console.log("📞 [call:start]", data);
-    io.to(roomId).emit("call:ringing", { ...data, status: "ringing", roomId });
+    io.to(roomId).emit("call:ringing", {
+      ...data,
+      status: "ringing",
+      roomId,
+    });
   });
 
+  // ✅ Accept call
   socket.on("call:accept", (data) => {
     console.log("✅ [call:accept]", data);
-    io.to(data.roomId).emit("call:accepted", { ...data, status: "accepted" });
+    io.to(data.roomId).emit("call:accepted", {
+      ...data,
+      status: "accepted",
+    });
   });
 
+  // ❌ Reject call
   socket.on("call:reject", (data) => {
     console.log("❌ [call:reject]", data);
-    io.to(data.roomId).emit("call:rejected", { ...data, status: "rejected" });
+    io.to(data.roomId).emit("call:rejected", {
+      ...data,
+      status: "rejected",
+    });
   });
 
+  // 🚫 Caller cancels before answer
   socket.on("call:cancel", (data) => {
     console.log("🚫 [call:cancel]", data);
-    io.to(data.roomId).emit("call:cancelled", { ...data, status: "cancelled" });
+    io.to(data.roomId).emit("call:cancelled", {
+      ...data,
+      status: "cancelled",
+    });
   });
 
+  // 🔚 End ongoing call
   socket.on("call:end", (data) => {
     console.log("🔚 [call:end]", data);
-    io.to(data.roomId).emit("call:ended", { ...data, status: "ended" });
+    io.to(data.roomId).emit("call:ended", {
+      ...data,
+      status: "ended",
+    });
   });
 
-  // ------------------------------------------------------
-  // 📡 WEBRTC SIGNALING (offer / answer / candidate)
-  // ------------------------------------------------------
+  // 📡 WebRTC offer/answer/ICE signaling
   socket.on("webrtc:signal", (data) => {
-    const { roomId, type } = data;
-    console.log(`📡 [webrtc:signal] ${type} from ${socket.id} → ${roomId}`);
-    // Use socket.to() to send only to the other peer
-    socket.to(roomId).emit("webrtc:signal", data);
+    console.log(`📡 [webrtc:signal] type=${data.type}`);
+    io.to(data.roomId).emit("webrtc:signal", data);
   });
 
-  // ------------------------------------------------------
-  // 🔌 DISCONNECT HANDLING
-  // ------------------------------------------------------
-  socket.on("disconnect", (reason) => {
-    console.log(`🔴 Disconnected: ${socket.id} (${reason})`);
-
-    for (const [roomId, users] of activeRooms.entries()) {
-      const remaining = users.filter((u) => u.socketId !== socket.id);
-      if (remaining.length > 0) activeRooms.set(roomId, remaining);
-      else activeRooms.delete(roomId);
-    }
-
-    console.log("📋 Rooms after disconnect:", JSON.stringify([...activeRooms.entries()], null, 2));
+  // 🚪 Handle disconnect
+  socket.on("disconnect", () => {
+    console.log("🔴 User disconnected:", socket.id);
   });
 });
 
 // ------------------------------------------------------
-// ✅ EXTERNAL EMIT ENDPOINT (for backend → socket bridge)
+// 🌐 EXTERNAL EMIT ENDPOINT (for Next.js backend)
 // ------------------------------------------------------
 app.post("/emit", (req, res) => {
   const { event, data } = req.body;
-
-  if (!event) return res.status(400).send("Missing 'event'");
+  if (!event) return res.status(400).send("Missing 'event' field");
 
   console.log("🧩 [API /emit] Event:", event);
   console.log("📦 Data:", data);
@@ -156,7 +156,7 @@ app.post("/emit", (req, res) => {
         ? `${data.sender_id}-${data.receiver_id}`
         : `${data.receiver_id}-${data.sender_id}`;
     io.to(roomId).emit(event, data);
-    console.log(`📤 [${event}] sent to room ${roomId}`);
+    console.log(`📤 [${event}] sent to room: ${roomId}`);
   } else {
     io.emit(event, data);
     console.log(`🌐 [${event}] broadcasted globally`);
@@ -170,5 +170,6 @@ app.post("/emit", (req, res) => {
 // ------------------------------------------------------
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ SoulSync Socket Server running on port ${PORT}`);
+  console.log(`✅ Socket.IO server running on port ${PORT}`);
+  console.log(`🌍 Allowed Origins:`, allowedOrigins);
 });
