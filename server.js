@@ -12,6 +12,11 @@ app.get("/", (req, res) => {
   res.send("✅ SoulSync Socket Server is running!");
 });
 
+// 🩵 Keep Render instance awake
+setInterval(() => {
+  console.log("💓 Keep-alive ping to prevent Render sleep");
+}, 5 * 60 * 1000); // every 5 minutes
+
 // ------------------------------------------------------
 // 🌍 SERVER + SOCKET.IO CONFIG
 // ------------------------------------------------------
@@ -28,7 +33,14 @@ const allowedOrigins = [
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.warn("❌ Blocked by CORS:", origin);
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     methods: ["GET", "POST"],
   },
 });
