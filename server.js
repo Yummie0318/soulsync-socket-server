@@ -15,7 +15,10 @@ app.get("/", (req, res) => {
 const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // TODO: restrict to your actual Next.js domain later
+    origin: [
+      "http://localhost:3000", // local dev
+      "https://soulsyncai.vercel.app" // ✅ update this to your deployed frontend domain
+    ],
     methods: ["GET", "POST"],
   },
 });
@@ -99,31 +102,31 @@ io.on("connection", (socket) => {
   });
 
   // ------------------------------------------------------
-  // 📡 WEBRTC SIGNALING EVENTS
+  // 📡 WEBRTC SIGNALING EVENTS (updated)
   // ------------------------------------------------------
 
   // Both clients joined and ready → Caller can offer
   socket.on("call:join-room", ({ roomId, userId }) => {
     socket.join(roomId);
     console.log(`📡 [call:join-room] User ${userId} joined ${roomId}`);
-    // Notify everyone in the room that one participant is ready
     socket.to(roomId).emit("call:ready", { roomId });
   });
 
   // WebRTC offer from caller
-  socket.on("webrtc:offer", ({ roomId, sdp }) => {
-    console.log("📡 [webrtc:offer] sending to room:", roomId);
-    socket.to(roomId).emit("webrtc:offer", { sdp });
+  socket.on("webrtc:offer", ({ roomId, signalData }) => {
+    console.log("📡 [webrtc:offer] relaying offer to room:", roomId);
+    socket.to(roomId).emit("webrtc:offer", { signalData });
   });
 
   // WebRTC answer from callee
-  socket.on("webrtc:answer", ({ roomId, sdp }) => {
-    console.log("📡 [webrtc:answer] sending to room:", roomId);
-    socket.to(roomId).emit("webrtc:answer", { sdp });
+  socket.on("webrtc:answer", ({ roomId, signalData }) => {
+    console.log("📡 [webrtc:answer] relaying answer to room:", roomId);
+    socket.to(roomId).emit("webrtc:answer", { signalData });
   });
 
-  // ICE candidates
+  // ICE candidate relay
   socket.on("webrtc:candidate", ({ roomId, candidate }) => {
+    console.log("📡 [webrtc:candidate] relaying candidate to room:", roomId);
     socket.to(roomId).emit("webrtc:candidate", { candidate });
   });
 
