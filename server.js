@@ -7,51 +7,26 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Health check route
+// ✅ Health check
 app.get("/", (req, res) => {
-  res.send("✅ SoulSync Socket Server is running!");
+  res.send("✅ WebRTC Socket Server is running");
 });
 
-// 🩵 Keep Render instance awake
-setInterval(() => {
-  console.log("💓 Keep-alive ping to prevent Render sleep");
-}, 5 * 60 * 1000); // every 5 minutes
-
-// ------------------------------------------------------
-// 🌍 SERVER + SOCKET.IO CONFIG
-// ------------------------------------------------------
 const server = createServer(app);
-
-// Allow both local and production origins
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://192.168.1.122:3000", // adjust your local IP if needed
-  "https://www.soulsyncai.site",
-  "https://soulsync-ugbm.vercel.app",
-  "https://soulsync-ugbm-82qad5e31-arnolds-projects-e2695847.vercel.app",
-];
-
 const io = new Server(server, {
   cors: {
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.warn("❌ Blocked by CORS:", origin);
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
+    origin: "*", // TODO: restrict to your actual Next.js domain later
     methods: ["GET", "POST"],
   },
 });
 
 // ------------------------------------------------------
-// ⚡ SOCKET EVENTS
+// 🔌 SOCKET CONNECTION HANDLER
 // ------------------------------------------------------
 io.on("connection", (socket) => {
   console.log("🟢 User connected:", socket.id);
 
-  // 🏠 Join private room for sender & receiver
+  // 🏠 Join a private chat/call room
   socket.on("joinRoom", ({ senderId, receiverId }) => {
     const roomId =
       senderId < receiverId
@@ -85,82 +60,94 @@ io.on("connection", (socket) => {
   });
 
   // ------------------------------------------------------
-  // 📞 CALL SIGNALING EVENTS
+  // 📞 CALL EVENTS
   // ------------------------------------------------------
 
-  // 🔔 Start call (Ringing)
+  // 🔔 Caller starts call (ringing)
   socket.on("call:start", (data) => {
     const { sender_id, receiver_id } = data;
     const roomId =
       sender_id < receiver_id
         ? `${sender_id}-${receiver_id}`
         : `${receiver_id}-${sender_id}`;
-
     console.log("📞 [call:start]", data);
-    io.to(roomId).emit("call:ringing", {
-      ...data,
-      status: "ringing",
-      roomId,
-    });
+    io.to(roomId).emit("call:ringing", { ...data, status: "ringing", roomId });
   });
 
-  // ✅ Accept call
+  // ✅ Receiver accepts call
   socket.on("call:accept", (data) => {
     console.log("✅ [call:accept]", data);
-    io.to(data.roomId).emit("call:accepted", {
-      ...data,
-      status: "accepted",
-    });
+    io.to(data.roomId).emit("call:accepted", { ...data, status: "accepted" });
   });
 
-  // ❌ Reject call
+  // ❌ Receiver rejects call
   socket.on("call:reject", (data) => {
     console.log("❌ [call:reject]", data);
-    io.to(data.roomId).emit("call:rejected", {
-      ...data,
-      status: "rejected",
-    });
+    io.to(data.roomId).emit("call:rejected", { ...data, status: "rejected" });
   });
 
   // 🚫 Caller cancels before answer
   socket.on("call:cancel", (data) => {
     console.log("🚫 [call:cancel]", data);
-    io.to(data.roomId).emit("call:cancelled", {
-      ...data,
-      status: "cancelled",
-    });
+    io.to(data.roomId).emit("call:cancelled", { ...data, status: "cancelled" });
   });
 
   // 🔚 End ongoing call
   socket.on("call:end", (data) => {
     console.log("🔚 [call:end]", data);
-    io.to(data.roomId).emit("call:ended", {
-      ...data,
-      status: "ended",
-    });
+    io.to(data.roomId).emit("call:ended", { ...data, status: "ended" });
   });
 
-  // 📡 WebRTC offer/answer/ICE signaling
-  socket.on("webrtc:signal", (data) => {
-    console.log(`📡 [webrtc:signal] type=${data.type}`);
-    io.to(data.roomId).emit("webrtc:signal", data);
+  // ------------------------------------------------------
+  // 📡 WEBRTC SIGNALING EVENTS
+  // ------------------------------------------------------
+
+  // Both clients joined and ready → Caller can offer
+  socket.on("call:join-room", ({ roomId, userId }) => {
+    socket.join(roomId);
+    console.log(`📡 [call:join-room] User ${userId} joined ${roomId}`);
+    // Notify everyone in the room that one participant is ready
+    socket.to(roomId).emit("call:ready", { roomId });
   });
 
-  // 🚪 Handle disconnect
+  // WebRTC offer from caller
+  socket.on("webrtc:offer", ({ roomId, sdp }) => {
+    console.log("📡 [webrtc:offer] sending to room:", roomId);
+    socket.to(roomId).emit("webrtc:offer", { sdp });
+  });
+
+  // WebRTC answer from callee
+  socket.on("webrtc:answer", ({ roomId, sdp }) => {
+    console.log("📡 [webrtc:answer] sending to room:", roomId);
+    socket.to(roomId).emit("webrtc:answer", { sdp });
+  });
+
+  // ICE candidates
+  socket.on("webrtc:candidate", ({ roomId, candidate }) => {
+    socket.to(roomId).emit("webrtc:candidate", { candidate });
+  });
+
+  // Leave room
+  socket.on("call:leave-room", ({ roomId }) => {
+    socket.leave(roomId);
+    console.log(`🚪 [call:leave-room] ${socket.id} left ${roomId}`);
+    io.to(roomId).emit("call:ended", { roomId, status: "ended" });
+  });
+
+  // Handle disconnect
   socket.on("disconnect", () => {
     console.log("🔴 User disconnected:", socket.id);
   });
 });
 
 // ------------------------------------------------------
-// 🌐 EXTERNAL EMIT ENDPOINT (for Next.js backend)
+// ✅ External emit endpoint (used by Next.js backend)
 // ------------------------------------------------------
 app.post("/emit", (req, res) => {
   const { event, data } = req.body;
   if (!event) return res.status(400).send("Missing 'event' field");
 
-  console.log("🧩 [API /emit] Event:", event);
-  console.log("📦 Data:", data);
+  console.log("🧩 [API /emit]", event, data);
 
   if (data?.sender_id && data?.receiver_id) {
     const roomId =
@@ -168,7 +155,7 @@ app.post("/emit", (req, res) => {
         ? `${data.sender_id}-${data.receiver_id}`
         : `${data.receiver_id}-${data.sender_id}`;
     io.to(roomId).emit(event, data);
-    console.log(`📤 [${event}] sent to room: ${roomId}`);
+    console.log(`📤 [${event}] → room: ${roomId}`);
   } else {
     io.emit(event, data);
     console.log(`🌐 [${event}] broadcasted globally`);
@@ -178,10 +165,9 @@ app.post("/emit", (req, res) => {
 });
 
 // ------------------------------------------------------
-// 🚀 START SERVER
+// ✅ Start server
 // ------------------------------------------------------
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Socket.IO server running on port ${PORT}`);
-  console.log(`🌍 Allowed Origins:`, allowedOrigins);
 });
