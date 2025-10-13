@@ -7,10 +7,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Health check
+// ✅ Health check route for Render
 app.get("/", (req, res) => {
-  res.send("✅ WebRTC Socket Server is running");
+  res.status(200).send("✅ SoulSync WebRTC Socket Server is running");
 });
+
+// ✅ Ignore favicon requests (Render or browser)
+app.get("/favicon.ico", (req, res) => res.status(204).end());
 
 const server = createServer(app);
 const io = new Server(server, {
@@ -29,7 +32,7 @@ const io = new Server(server, {
 io.on("connection", (socket) => {
   console.log("🟢 User connected:", socket.id);
 
-  // 🏠 Legacy: join direct chat message room
+  // 🏠 Join message room
   socket.on("joinRoom", ({ senderId, receiverId }) => {
     const roomId =
       senderId < receiverId
@@ -39,9 +42,7 @@ io.on("connection", (socket) => {
     console.log(`🏠 ${socket.id} joined room: ${roomId}`);
   });
 
-  // ------------------------------------------------------
-  // 💬 MESSAGE EVENTS
-  // ------------------------------------------------------
+  // 💬 Message events
   const messageEvents = [
     "message:new",
     "message:update",
@@ -57,7 +58,6 @@ io.on("connection", (socket) => {
         sender_id < receiver_id
           ? `${sender_id}-${receiver_id}`
           : `${receiver_id}-${sender_id}`;
-      console.log(`💬 [${event}]`, data);
       io.to(roomId).emit(event, data);
     });
   });
@@ -65,84 +65,21 @@ io.on("connection", (socket) => {
   // ------------------------------------------------------
   // 📞 CALL EVENTS
   // ------------------------------------------------------
+  const callEvents = [
+    ["call:start", "call:ringing", "ringing"],
+    ["call:accept", "call:accepted", "accepted"],
+    ["call:reject", "call:rejected", "rejected"],
+    ["call:cancel", "call:cancelled", "cancelled"],
+    ["call:end", "call:ended", "ended"],
+  ];
 
-  // 🔔 Caller starts call (ringing)
-  socket.on("call:start", (data) => {
-    const { sender_id, receiver_id } = data;
-    const roomId =
-      sender_id < receiver_id
-        ? `${sender_id}-${receiver_id}`
-        : `${receiver_id}-${sender_id}`;
-
-    console.log("📞 [call:start]", data);
-    io.to(roomId).emit("call:ringing", {
-      ...data,
-      status: "ringing",
-      roomId,
-    });
-  });
-
-  // ✅ Receiver accepts call → notify *specific room*
-  socket.on("call:accept", (data) => {
-    const { caller_id, receiver_id } = data;
-    const roomId =
-      caller_id < receiver_id
-        ? `${caller_id}-${receiver_id}`
-        : `${receiver_id}-${caller_id}`;
-
-    console.log(`✅ [call:accept] Emitting to room ${roomId}`);
-    io.to(roomId).emit("call:accepted", {
-      ...data,
-      status: "accepted",
-      roomId,
-    });
-  });
-
-  // ❌ Receiver rejects call
-  socket.on("call:reject", (data) => {
-    const { caller_id, receiver_id } = data;
-    const roomId =
-      caller_id < receiver_id
-        ? `${caller_id}-${receiver_id}`
-        : `${receiver_id}-${caller_id}`;
-
-    console.log(`❌ [call:reject] Emitting to room ${roomId}`);
-    io.to(roomId).emit("call:rejected", {
-      ...data,
-      status: "rejected",
-      roomId,
-    });
-  });
-
-  // 🚫 Caller cancels before answer
-  socket.on("call:cancel", (data) => {
-    const { caller_id, receiver_id } = data;
-    const roomId =
-      caller_id < receiver_id
-        ? `${caller_id}-${receiver_id}`
-        : `${receiver_id}-${caller_id}`;
-
-    console.log(`🚫 [call:cancel] Emitting to room ${roomId}`);
-    io.to(roomId).emit("call:cancelled", {
-      ...data,
-      status: "cancelled",
-      roomId,
-    });
-  });
-
-  // 🔚 End ongoing call
-  socket.on("call:end", (data) => {
-    const { caller_id, receiver_id } = data;
-    const roomId =
-      caller_id < receiver_id
-        ? `${caller_id}-${receiver_id}`
-        : `${receiver_id}-${caller_id}`;
-
-    console.log(`🔚 [call:end] Emitting to room ${roomId}`);
-    io.to(roomId).emit("call:ended", {
-      ...data,
-      status: "ended",
-      roomId,
+  callEvents.forEach(([listenEvent, emitEvent, status]) => {
+    socket.on(listenEvent, (data) => {
+      const id1 = data.sender_id || data.caller_id;
+      const id2 = data.receiver_id;
+      const roomId = id1 < id2 ? `${id1}-${id2}` : `${id2}-${id1}`;
+      console.log(`📞 [${listenEvent}] → room ${roomId}`);
+      io.to(roomId).emit(emitEvent, { ...data, status, roomId });
     });
   });
 
@@ -151,28 +88,23 @@ io.on("connection", (socket) => {
   // ------------------------------------------------------
   socket.on("call:join-room", ({ roomId, userId }) => {
     socket.join(roomId);
-    console.log(`📡 [call:join-room] User ${userId} joined ${roomId}`);
     socket.to(roomId).emit("call:ready", { roomId });
   });
 
-  socket.on("webrtc:offer", ({ roomId, signalData }) => {
-    console.log("📡 [webrtc:offer] relaying offer to room:", roomId);
-    socket.to(roomId).emit("webrtc:offer", { signalData });
-  });
+  socket.on("webrtc:offer", ({ roomId, signalData }) =>
+    socket.to(roomId).emit("webrtc:offer", { signalData })
+  );
 
-  socket.on("webrtc:answer", ({ roomId, signalData }) => {
-    console.log("📡 [webrtc:answer] relaying answer to room:", roomId);
-    socket.to(roomId).emit("webrtc:answer", { signalData });
-  });
+  socket.on("webrtc:answer", ({ roomId, signalData }) =>
+    socket.to(roomId).emit("webrtc:answer", { signalData })
+  );
 
-  socket.on("webrtc:candidate", ({ roomId, candidate }) => {
-    console.log("📡 [webrtc:candidate] relaying candidate to room:", roomId);
-    socket.to(roomId).emit("webrtc:candidate", { candidate });
-  });
+  socket.on("webrtc:candidate", ({ roomId, candidate }) =>
+    socket.to(roomId).emit("webrtc:candidate", { candidate })
+  );
 
   socket.on("call:leave-room", ({ roomId }) => {
     socket.leave(roomId);
-    console.log(`🚪 [call:leave-room] ${socket.id} left ${roomId}`);
     io.to(roomId).emit("call:ended", { roomId, status: "ended" });
   });
 
@@ -182,15 +114,12 @@ io.on("connection", (socket) => {
 });
 
 // ------------------------------------------------------
-// ✅ External emit endpoint (used by Next.js backend)
+// ✅ External emit endpoint
 // ------------------------------------------------------
 app.post("/emit", (req, res) => {
   const { event, data } = req.body;
   if (!event) return res.status(400).send("Missing 'event' field");
 
-  console.log("🧩 [API /emit]", event, data);
-
-  // Automatically determine room
   const { sender_id, receiver_id, caller_id, receiverId } = data || {};
   const id1 = sender_id || caller_id;
   const id2 = receiver_id || receiverId;
@@ -201,7 +130,6 @@ app.post("/emit", (req, res) => {
     console.log(`📤 [${event}] → room: ${roomId}`);
   } else {
     io.emit(event, data);
-    console.log(`🌐 [${event}] broadcasted globally`);
   }
 
   res.send("✅ Emit successful");
