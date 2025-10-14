@@ -114,8 +114,11 @@ io.on("connection", (socket) => {
   socket.on("webrtc:signal", (data) => {
     if (!data?.roomId) return;
     console.log(`📡 [webrtc:signal] type=${data.type} → room=${data.roomId}`);
-    io.to(data.roomId).emit("webrtc:signal", data);
+  
+    // ✅ Exclude sender so caller won't receive its own offer
+    socket.to(data.roomId).emit("webrtc:signal", data);
   });
+  
 
   // ======================================================
   // 🔌 DISCONNECTION
