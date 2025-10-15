@@ -23,11 +23,16 @@ const io = new Server(server, {
 // ======================================================
 // 🌐 SOCKET CONNECTION HANDLING
 // ======================================================
+const activeRooms = {}; // { roomId: { sockets: Set<socket.id> } }
+
 io.on("connection", (socket) => {
   console.log("🟢 User connected:", socket.id);
 
+  // Store which room the socket currently joined
+  socket.data.currentRoom = null;
+
   // ======================================================
-  // 🏠 ROOM JOINING (shared for messages and calls)
+  // 🏠 JOIN ROOM
   // ======================================================
   socket.on("joinRoom", ({ senderId, receiverId }) => {
     if (!senderId || !receiverId) return;
@@ -37,40 +42,22 @@ io.on("connection", (socket) => {
         : `${receiverId}-${senderId}`;
 
     socket.join(roomId);
-    console.log(`🏠 ${socket.id} joined room: ${roomId}`);
-  });
+    socket.data.currentRoom = roomId;
 
-  // ======================================================
-  // 💬 MESSAGE EVENTS
-  // ======================================================
-  const messageEvents = [
-    "message:new",
-    "message:update",
-    "message:delete",
-    "message:reaction",
-    "message:reply",
-  ];
+    // Track active members
+    if (!activeRooms[roomId]) activeRooms[roomId] = { sockets: new Set() };
+    activeRooms[roomId].sockets.add(socket.id);
 
-  messageEvents.forEach((event) => {
-    socket.on(event, (data) => {
-      const { sender_id, receiver_id } = data || {};
-      if (!sender_id || !receiver_id) return;
+    const count = activeRooms[roomId].sockets.size;
+    console.log(`🏠 ${socket.id} joined room: ${roomId} (${count} users)`);
 
-      const roomId =
-        sender_id < receiver_id
-          ? `${sender_id}-${receiver_id}`
-          : `${receiver_id}-${sender_id}`;
-
-      console.log(`💬 [${event}]`, data);
-      io.to(roomId).emit(event, data);
-    });
+    // Let peers know someone joined
+    socket.to(roomId).emit("room:joined", { roomId, socketId: socket.id });
   });
 
   // ======================================================
   // 📞 CALL EVENTS
   // ======================================================
-
-  // 🔔 Start a call (ringing)
   socket.on("call:start", (data) => {
     const { sender_id, receiver_id } = data || {};
     if (!sender_id || !receiver_id) return;
@@ -84,49 +71,65 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("call:ringing", { ...data, status: "ringing", roomId });
   });
 
-  // ✅ Accept call
   socket.on("call:accept", (data) => {
     console.log("✅ [call:accept]", data);
-    if (data?.roomId) io.to(data.roomId).emit("call:accepted", { ...data, status: "accepted" });
+    if (data?.roomId)
+      io.to(data.roomId).emit("call:accepted", { ...data, status: "accepted" });
   });
 
-  // ❌ Reject call
   socket.on("call:reject", (data) => {
     console.log("❌ [call:reject]", data);
-    if (data?.roomId) io.to(data.roomId).emit("call:rejected", { ...data, status: "rejected" });
+    if (data?.roomId)
+      io.to(data.roomId).emit("call:rejected", { ...data, status: "rejected" });
   });
 
-  // 🚫 Cancel call (before answered)
   socket.on("call:cancel", (data) => {
     console.log("🚫 [call:cancel]", data);
-    if (data?.roomId) io.to(data.roomId).emit("call:cancelled", { ...data, status: "cancelled" });
+    if (data?.roomId)
+      io.to(data.roomId).emit("call:cancelled", { ...data, status: "cancelled" });
   });
 
-  // 🔚 End ongoing call
   socket.on("call:end", (data) => {
     console.log("🔚 [call:end]", data);
-    if (data?.roomId) io.to(data.roomId).emit("call:ended", { ...data, status: "ended" });
+    if (data?.roomId)
+      io.to(data.roomId).emit("call:ended", { ...data, status: "ended" });
   });
 
   // ======================================================
-  // 📡 WebRTC SIGNAL EXCHANGE
+  // 📡 WEBRTC SIGNAL EXCHANGE
   // ======================================================
   socket.on("webrtc:signal", (data) => {
     if (!data?.roomId) return;
-    console.log(`📡 [webrtc:signal] type=${data.type} → room=${data.roomId}`);
-  
-    // ✅ Exclude sender so caller won't receive its own offer
-    socket.to(data.roomId).emit("webrtc:signal", data);
+    const { roomId, type } = data;
+    console.log(`📡 [webrtc:signal] type=${type} from ${socket.id} → room=${roomId}`);
+
+    // ✅ Forward signal to everyone else in the same room
+    socket.to(roomId).emit("webrtc:signal", data);
   });
-  
 
   // ======================================================
-  // 🔌 DISCONNECTION
+  // 🔌 DISCONNECTION (GRACEFUL CLEANUP)
   // ======================================================
   socket.on("disconnect", () => {
+    const roomId = socket.data.currentRoom;
+    if (roomId && activeRooms[roomId]) {
+      activeRooms[roomId].sockets.delete(socket.id);
+      const count = activeRooms[roomId].sockets.size;
+
+      if (count === 0) {
+        delete activeRooms[roomId];
+        console.log(`🧹 [Cleanup] Room ${roomId} empty and removed`);
+      } else {
+        console.log(`👥 [Disconnect] Room ${roomId} now has ${count} users`);
+        socket.to(roomId).emit("room:left", { roomId, socketId: socket.id });
+      }
+    }
+
     console.log("🔴 User disconnected:", socket.id);
   });
 });
+
+
 
 // ======================================================
 // 🌍 EXTERNAL EMIT ENDPOINT (Next.js → Socket.io bridge)
