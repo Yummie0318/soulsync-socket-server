@@ -15,7 +15,7 @@ app.get("/", (req, res) => {
 const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // 🔒 Restrict later to your actual Next.js domain
+    origin: "*",
     methods: ["GET", "POST"],
   },
 });
@@ -23,12 +23,10 @@ const io = new Server(server, {
 // ======================================================
 // 🌐 SOCKET CONNECTION HANDLING
 // ======================================================
-const activeRooms = {}; // { roomId: { sockets: Set<socket.id> } }
+const activeRooms = {}; // { roomId: { sockets: Set() } }
 
 io.on("connection", (socket) => {
   console.log("🟢 User connected:", socket.id);
-
-  // Store which room the socket currently joined
   socket.data.currentRoom = null;
 
   // ======================================================
@@ -36,63 +34,57 @@ io.on("connection", (socket) => {
   // ======================================================
   socket.on("joinRoom", ({ senderId, receiverId }) => {
     if (!senderId || !receiverId) return;
-    const roomId =
-      senderId < receiverId
-        ? `${senderId}-${receiverId}`
-        : `${receiverId}-${senderId}`;
+    const roomId = senderId < receiverId ? `${senderId}-${receiverId}` : `${receiverId}-${senderId}`;
 
     socket.join(roomId);
     socket.data.currentRoom = roomId;
 
-    // Track active members
     if (!activeRooms[roomId]) activeRooms[roomId] = { sockets: new Set() };
     activeRooms[roomId].sockets.add(socket.id);
 
-    const count = activeRooms[roomId].sockets.size;
-    console.log(`🏠 ${socket.id} joined room: ${roomId} (${count} users)`);
+    console.log(`🏠 ${socket.id} joined room: ${roomId} (${activeRooms[roomId].sockets.size} users)`);
 
-    // Let peers know someone joined
     socket.to(roomId).emit("room:joined", { roomId, socketId: socket.id });
+
+    // Check if room is ready
+    if (activeRooms[roomId].sockets.size >= 2) {
+      io.to(roomId).emit("room:ready", { roomId });
+    }
   });
 
   // ======================================================
   // 📞 CALL EVENTS
   // ======================================================
+  const emitToRoom = (event, data) => {
+    const sid = data?.sender_id ?? data?.caller_id;
+    const rid = data?.receiver_id ?? data?.receiverId;
+    if (sid && rid) {
+      const roomId = sid < rid ? `${sid}-${rid}` : `${rid}-${sid}`;
+      io.to(roomId).emit(event, { ...data, roomId });
+    } else {
+      io.emit(event, data);
+    }
+  };
+
   socket.on("call:start", (data) => {
-    const { sender_id, receiver_id } = data || {};
-    if (!sender_id || !receiver_id) return;
-
-    const roomId =
-      sender_id < receiver_id
-        ? `${sender_id}-${receiver_id}`
-        : `${receiver_id}-${sender_id}`;
-
     console.log("📞 [call:start]", data);
-    io.to(roomId).emit("call:ringing", { ...data, status: "ringing", roomId });
+    emitToRoom("call:ringing", { ...data, status: "ringing" });
   });
-
   socket.on("call:accept", (data) => {
     console.log("✅ [call:accept]", data);
-    if (data?.roomId)
-      io.to(data.roomId).emit("call:accepted", { ...data, status: "accepted" });
+    emitToRoom("call:accepted", { ...data, status: "accepted" });
   });
-
   socket.on("call:reject", (data) => {
     console.log("❌ [call:reject]", data);
-    if (data?.roomId)
-      io.to(data.roomId).emit("call:rejected", { ...data, status: "rejected" });
+    emitToRoom("call:rejected", { ...data, status: "rejected" });
   });
-
   socket.on("call:cancel", (data) => {
     console.log("🚫 [call:cancel]", data);
-    if (data?.roomId)
-      io.to(data.roomId).emit("call:cancelled", { ...data, status: "cancelled" });
+    emitToRoom("call:cancelled", { ...data, status: "cancelled" });
   });
-
   socket.on("call:end", (data) => {
     console.log("🔚 [call:end]", data);
-    if (data?.roomId)
-      io.to(data.roomId).emit("call:ended", { ...data, status: "ended" });
+    emitToRoom("call:ended", { ...data, status: "ended" });
   });
 
   // ======================================================
@@ -100,27 +92,24 @@ io.on("connection", (socket) => {
   // ======================================================
   socket.on("webrtc:signal", (data) => {
     if (!data?.roomId) return;
-    const { roomId, type } = data;
-    console.log(`📡 [webrtc:signal] type=${type} from ${socket.id} → room=${roomId}`);
-
-    // ✅ Forward signal to everyone else in the same room
-    socket.to(roomId).emit("webrtc:signal", data);
+    console.log(`📡 [webrtc:signal] type=${data.type} from ${socket.id} → room=${data.roomId}`);
+    socket.to(data.roomId).emit("webrtc:signal", data);
   });
 
   // ======================================================
-  // 🔌 DISCONNECTION (GRACEFUL CLEANUP)
+  // 🔌 DISCONNECTION (with cleanup)
   // ======================================================
   socket.on("disconnect", () => {
     const roomId = socket.data.currentRoom;
     if (roomId && activeRooms[roomId]) {
       activeRooms[roomId].sockets.delete(socket.id);
-      const count = activeRooms[roomId].sockets.size;
+      const remaining = activeRooms[roomId].sockets.size;
 
-      if (count === 0) {
+      if (remaining === 0) {
         delete activeRooms[roomId];
         console.log(`🧹 [Cleanup] Room ${roomId} empty and removed`);
       } else {
-        console.log(`👥 [Disconnect] Room ${roomId} now has ${count} users`);
+        console.log(`👥 [Disconnect] Room ${roomId} now has ${remaining} users`);
         socket.to(roomId).emit("room:left", { roomId, socketId: socket.id });
       }
     }
@@ -129,24 +118,19 @@ io.on("connection", (socket) => {
   });
 });
 
-
-
 // ======================================================
 // 🌍 EXTERNAL EMIT ENDPOINT (Next.js → Socket.io bridge)
 // ======================================================
 app.post("/emit", (req, res) => {
   const { event, data } = req.body;
-
   if (!event) return res.status(400).send("Missing 'event' field");
-  console.log("🧩 [API /emit] →", event, data);
 
-  if (data?.sender_id && data?.receiver_id) {
-    const roomId =
-      data.sender_id < data.receiver_id
-        ? `${data.sender_id}-${data.receiver_id}`
-        : `${data.receiver_id}-${data.sender_id}`;
+  const sid = data?.sender_id ?? data?.caller_id;
+  const rid = data?.receiver_id ?? data?.receiverId;
 
-    io.to(roomId).emit(event, data);
+  if (sid && rid) {
+    const roomId = sid < rid ? `${sid}-${rid}` : `${rid}-${sid}`;
+    io.to(roomId).emit(event, { ...data, roomId });
     console.log(`📤 [${event}] sent to room: ${roomId}`);
   } else {
     io.emit(event, data);
