@@ -29,7 +29,20 @@ io.on("connection", (socket) => {
   log("🟢 Connected", socket.id);
   socket.data.currentRoom = null;
 
-  // ================= Messaging & Rooms =================
+  // ======================================================
+  // 👤 USER JOIN
+  // ======================================================
+  socket.on("joinUserRoom", (userId) => {
+    if (!userId) return;
+    socket.join(`user:${userId}`);
+    if (!userSockets[userId]) userSockets[userId] = new Set();
+    userSockets[userId].add(socket.id);
+    log("👤 Joined user room", `user:${userId}`);
+  });
+
+  // ======================================================
+  // 💬 MESSAGING ROOM
+  // ======================================================
   socket.on("joinRoom", ({ senderId, receiverId }) => {
     if (!senderId || !receiverId) return;
     const roomId = senderId < receiverId ? `${senderId}-${receiverId}` : `${receiverId}-${senderId}`;
@@ -44,14 +57,15 @@ io.on("connection", (socket) => {
 
     socket.to(roomId).emit("room:joined", { roomId, socketId: socket.id });
 
-    // Ready if at least 2 participants
     if (activeRooms[roomId].sockets.size >= 2) {
       io.to(roomId).emit("room:ready", { roomId });
       log("✅ RoomReady", roomId);
     }
   });
 
-  // ================= Call Handling =================
+  // ======================================================
+  // 📞 CALL HANDLING (Updated)
+  // ======================================================
   const emitToRoom = (event, data) => {
     const sid = data?.sender_id ?? data?.caller_id;
     const rid = data?.receiver_id ?? data?.receiverId;
@@ -59,7 +73,8 @@ io.on("connection", (socket) => {
     if (sid && rid) {
       const roomId = sid < rid ? `${sid}-${rid}` : `${rid}-${sid}`;
       io.to(roomId).emit(event, { ...data, roomId });
-      log("📤 Event", event, `to room ${roomId}`);
+      io.to(`user:${rid}`).emit(event, { ...data, roomId }); // ✅ ensure receiver always gets it
+      log("📤 Event", event, `to ${roomId} & user:${rid}`);
     } else {
       io.emit(event, data);
       log("🌐 Broadcast", event);
@@ -91,8 +106,9 @@ io.on("connection", (socket) => {
     emitToRoom("call:ended", { ...data, status: "ended" });
   });
 
-  // ================= WebRTC signaling =================
-  // ✅ Split into clear offer/answer/candidate events
+  // ======================================================
+  // 📡 WEBRTC SIGNALING
+  // ======================================================
   socket.on("webrtc:offer", (data) => {
     if (!data?.roomId) return;
     socket.to(data.roomId).emit("webrtc:offer", data);
@@ -111,14 +127,9 @@ io.on("connection", (socket) => {
     log("🧊 ICE Candidate →", data.roomId);
   });
 
-  // (optional) backward-compatibility for old clients
-  socket.on("webrtc:signal", (data) => {
-    if (!data?.roomId) return;
-    socket.to(data.roomId).emit("webrtc:signal", data);
-    log("📡 Legacy WebRTC Signal", data.type, `→ room ${data.roomId}`);
-  });
-
-  // ================= Disconnect & cleanup =================
+  // ======================================================
+  // 🔌 DISCONNECT
+  // ======================================================
   socket.on("disconnect", () => {
     const roomId = socket.data.currentRoom;
     if (roomId && activeRooms[roomId]) {
@@ -130,13 +141,14 @@ io.on("connection", (socket) => {
     }
 
     Object.keys(userSockets).forEach((uid) => {
-      userSockets[Number(uid)].delete(socket.id);
-      if (userSockets[Number(uid)].size === 0) delete userSockets[Number(uid)];
+      userSockets[uid].delete(socket.id);
+      if (userSockets[uid].size === 0) delete userSockets[uid];
     });
 
     log("🔴 Disconnected", socket.id);
   });
 });
+
 
 // ======================================================
 // 🌍 External emit endpoint (Next.js → Socket.IO bridge)
