@@ -92,10 +92,30 @@ io.on("connection", (socket) => {
   });
 
   // ================= WebRTC signaling =================
+  // ✅ Split into clear offer/answer/candidate events
+  socket.on("webrtc:offer", (data) => {
+    if (!data?.roomId) return;
+    socket.to(data.roomId).emit("webrtc:offer", data);
+    log("📡 WebRTC Offer →", data.roomId);
+  });
+
+  socket.on("webrtc:answer", (data) => {
+    if (!data?.roomId) return;
+    socket.to(data.roomId).emit("webrtc:answer", data);
+    log("📡 WebRTC Answer →", data.roomId);
+  });
+
+  socket.on("webrtc:candidate", (data) => {
+    if (!data?.roomId) return;
+    socket.to(data.roomId).emit("webrtc:candidate", data);
+    log("🧊 ICE Candidate →", data.roomId);
+  });
+
+  // (optional) backward-compatibility for old clients
   socket.on("webrtc:signal", (data) => {
     if (!data?.roomId) return;
     socket.to(data.roomId).emit("webrtc:signal", data);
-    log("📡 WebRTC Signal", data.type, `from ${socket.id} → room ${data.roomId}`);
+    log("📡 Legacy WebRTC Signal", data.type, `→ room ${data.roomId}`);
   });
 
   // ================= Disconnect & cleanup =================
@@ -109,7 +129,6 @@ io.on("connection", (socket) => {
       log("👥 Disconnect", `Room ${roomId} now has ${remaining} users`);
     }
 
-    // Remove socket from userSockets map
     Object.keys(userSockets).forEach((uid) => {
       userSockets[Number(uid)].delete(socket.id);
       if (userSockets[Number(uid)].size === 0) delete userSockets[Number(uid)];
