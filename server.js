@@ -1,8 +1,8 @@
 /**
- * SoulSync Socket.IO Server (Enhanced Call State Tracking)
+ * SoulSync Socket.IO Server (Enhanced Call + Theme Sync)
  * --------------------------------------------------------
- * Handles real-time chat, call signaling, and user presence
- * with persistent call state + detailed tracing.
+ * Handles real-time chat, call signaling, and user presence,
+ * with live theme synchronization for conversations.
  */
 
 import express from "express";
@@ -48,19 +48,23 @@ const log = {
 // 🧩 Helper: Emit to Room + Receiver User Channel
 // ======================================================
 const emitToRoom = (event, data) => {
-  const sid = data?.sender_id ?? data?.caller_id;
-  const rid = data?.receiver_id ?? data?.receiverId;
-  if (!sid || !rid) return;
+  const sid = data?.sender_id ?? data?.caller_id ?? data?.updated_by;
+  const rid = data?.receiver_id ?? data?.receiverId ?? data?.other_user_id;
 
-  const roomId = sid < rid ? `${sid}-${rid}` : `${rid}-${sid}`;
+  let roomId;
+  if (data?.conversationKey) {
+    roomId = data.conversationKey.replace("_", "-");
+  } else if (sid && rid) {
+    roomId = sid < rid ? `${sid}-${rid}` : `${rid}-${sid}`;
+  }
+
+  if (!roomId) {
+    log.warn("⚠️ EMIT FAILED", "No valid roomId found", { event, data });
+    return;
+  }
+
   io.to(roomId).emit(event, { ...data, roomId });
-  io.to(`user:${rid}`).emit(event, { ...data, roomId });
-
-  log.success("📤 EMIT", `${event} → room ${roomId} & user:${rid}`, {
-    sender: sid,
-    receiver: rid,
-    payload: data,
-  });
+  log.success("📤 EMIT", `${event} → room ${roomId}`, data);
 };
 
 // ======================================================
@@ -80,7 +84,7 @@ io.on("connection", (socket) => {
     log.info("👤 USER ROOM", `${socket.id} joined ${room}`);
   });
 
-  // 💬 Join private room
+  // 💬 Join private conversation room
   socket.on("joinRoom", ({ senderId, receiverId }) => {
     if (!senderId || !receiverId) return;
     const roomId = senderId < receiverId ? `${senderId}-${receiverId}` : `${receiverId}-${senderId}`;
@@ -97,13 +101,12 @@ io.on("connection", (socket) => {
   });
 
   // ======================================================
-  // 📞 Call Handling
+  // 📞 CALL HANDLERS
   // ======================================================
   socket.on("call:start", (data) => {
     const callId = data?.id;
     if (!callId) return;
     callStates[callId] = { ...data, status: "ringing", updated_at: new Date() };
-    log.info("📞 CALL START", "Initiating call", data);
     emitToRoom("call:ringing", callStates[callId]);
   });
 
@@ -113,7 +116,6 @@ io.on("connection", (socket) => {
       callStates[callId].status = "accepted";
       callStates[callId].updated_at = new Date();
     }
-    log.success("✅ CALL ACCEPT", "Call accepted", data);
     emitToRoom("call:accepted", { ...data, status: "accepted" });
   });
 
@@ -123,7 +125,6 @@ io.on("connection", (socket) => {
       callStates[callId].status = "rejected";
       callStates[callId].updated_at = new Date();
     }
-    log.warn("❌ CALL REJECT", "Call rejected", data);
     emitToRoom("call:rejected", { ...data, status: "rejected" });
   });
 
@@ -133,7 +134,6 @@ io.on("connection", (socket) => {
       callStates[callId].status = "cancelled";
       callStates[callId].updated_at = new Date();
     }
-    log.warn("🚫 CALL CANCEL", "Call cancelled", data);
     emitToRoom("call:cancelled", { ...data, status: "cancelled" });
   });
 
@@ -143,8 +143,17 @@ io.on("connection", (socket) => {
       callStates[callId].status = "ended";
       callStates[callId].updated_at = new Date();
     }
-    log.info("🔚 CALL END", "Call ended", data);
     emitToRoom("call:ended", { ...data, status: "ended" });
+  });
+
+  // ======================================================
+  // 🎨 THEME SYNC HANDLER (NEW)
+  // ======================================================
+  socket.on("conversation:theme:update", (data) => {
+    if (!data?.conversationKey) return;
+    const roomId = data.conversationKey.replace("_", "-");
+    io.to(roomId).emit("conversation:theme:update", data);
+    log.success("🎨 THEME SYNC", `Theme updated → ${roomId}`, data);
   });
 
   // ======================================================
@@ -195,15 +204,8 @@ app.post("/emit", (req, res) => {
   const { event, data } = req.body;
   if (!event) return res.status(400).send("Missing 'event'");
   log.info("🌍 EXTERNAL EMIT", event, data);
-  emitToRoom(event, data);
+  io.emit(event, data); // <-- Broadcast globally
   res.send("✅ Emit successful");
-});
-
-// ======================================================
-// 🧾 Debug Route (to inspect callStates)
-// ======================================================
-app.get("/calls", (_, res) => {
-  res.json(callStates);
 });
 
 // ======================================================
